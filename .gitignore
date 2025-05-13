@@ -1,0 +1,8 @@
+*.exe
+*.pyc
+*.pyo
+*.log
+*.tmp
+*.swp
+*.bak
+*.orig

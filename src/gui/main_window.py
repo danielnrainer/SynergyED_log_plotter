@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+import matplotlib.dates as mdates
 from utils.data_processor import LogDataProcessor
 
 class MainWindow(QMainWindow):
@@ -131,7 +132,7 @@ class MainWindow(QMainWindow):
         
         # Add statistics checkbox
         self.show_stats = QCheckBox("Show Statistics")
-        self.show_stats.setChecked(True)
+        self.show_stats.setChecked(False)
         layout.addWidget(self.show_stats)
         
         # Add stretch to push everything up
@@ -182,25 +183,34 @@ class MainWindow(QMainWindow):
             return
               # Clear the current figure
         self.figure.clear()
-        
-        # Create a single plot for all parameters
+          # Create a single plot for all parameters
         ax = self.figure.add_subplot(111)
-        
-        # Plot each parameter and file
+          # Plot each parameter and file
         plot_type = self.plot_type.currentText()
         
+        # Get default color cycle from matplotlib
+        prop_cycle = plt.rcParams['axes.prop_cycle']
+        colors = prop_cycle.by_key()['color']
+        
         for i, param in enumerate(selected_params):
+            # Use the same color for each parameter
+            color = colors[i % len(colors)]
+            
             for j, file_path in enumerate(selected_files):
                 df = self.data_processor.read_log_file(file_path)
                 if df is not None:
                     label = f"{param} - Dataset {j+1}"
                     if plot_type in ["Line Plot", "Both"]:
-                        ax.plot(df.index, df[param], '-', label=label if self.show_legend.isChecked() else "")
+                        ax.plot(df.index, df[param], '-', color=color, label=label if self.show_legend.isChecked() else "")
                     if plot_type in ["Scatter Plot", "Both"]:
-                        ax.scatter(df.index, df[param], alpha=0.5, label=label if self.show_legend.isChecked() else "")
+                        ax.scatter(df.index, df[param], color=color, alpha=0.5, label=label if self.show_legend.isChecked() else "")
         
         ax.set_xlabel("Time")
         ax.set_ylabel("Value")
+        
+        # Format x-axis to show time in HH:MM:SS
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
         
         if self.show_grid.isChecked():
             ax.grid(True)
