@@ -23,10 +23,38 @@ class LogDataProcessor:
             self.base_dir = os.getcwd()
 
     def parse_folder_name(self, folder_name):
-        """Parse datetime from folder name format: Mon-May-12-12-48-37-2025_EDAutoLog"""
+        """Parse datetime from folder name in either format:
+        Old format: Mon-May-12-12-48-37-2025_EDAutoLog
+        New format: 2025_05_14_08h19m10_Jeol_MicroED.dat
+        """
         try:
+            # Try new format first
+            if folder_name.count('_') >= 3 and 'h' in folder_name and 'm' in folder_name:
+                return self.parse_new_format(folder_name)
+            
+            # Try old format
             date_part = folder_name.split('_')[0]
             return datetime.strptime(date_part, '%a-%b-%d-%H-%M-%S-%Y')
+        except (ValueError, IndexError):
+            return None
+            
+    def parse_new_format(self, filename):
+        """Parse datetime from new format: 2025_05_14_08h19m10_Jeol_MicroED.dat"""
+        try:
+            # Split the filename and take the first 4 parts (date and time)
+            parts = filename.split('_')[:4]
+            if len(parts) < 4:
+                return None
+                
+            year, month, day = map(int, parts[:3])
+            time_part = parts[3]
+            
+            # Parse time part (format: 08h19m10)
+            hour = int(time_part.split('h')[0])
+            minute = int(time_part.split('h')[1].split('m')[0])
+            second = int(time_part.split('m')[1].split('_')[0])
+            
+            return datetime(year, month, day, hour, minute, second)
         except (ValueError, IndexError):
             return None
 
@@ -74,25 +102,37 @@ class LogDataProcessor:
                 print(f"Warning: Base directory {self.base_dir} not found.")
                 return log_files
             
-            for folder_name in os.listdir(self.base_dir):
-                if not folder_name.endswith('_EDAutoLog'):
-                    continue
-                    
-                folder_date = self.parse_folder_name(folder_name)
-                if folder_date is None:
-                    continue
-                    
-                if start_date and folder_date.date() < start_date:
-                    continue
-                if end_date and folder_date.date() > end_date:
-                    continue
+            # Look for files in both old and new formats
+            for item_name in os.listdir(self.base_dir):
+                file_date = None
+                file_path = None
                 
-                log_file = os.path.join(self.base_dir, folder_name, 'EDAutoLog.dat')
-                if os.path.exists(log_file):
+                # Check for old format (folder with EDAutoLog.dat inside)
+                if item_name.endswith('_EDAutoLog'):
+                    old_log_file = os.path.join(self.base_dir, item_name, 'EDAutoLog.dat')
+                    if os.path.exists(old_log_file):
+                        file_date = self.parse_folder_name(item_name)
+                        file_path = old_log_file
+                
+                # Check for new format (direct .dat file)
+                elif item_name.endswith('_Jeol_MicroED.dat'):
+                    new_log_file = os.path.join(self.base_dir, item_name)
+                    if os.path.exists(new_log_file):
+                        file_date = self.parse_folder_name(item_name)
+                        file_path = new_log_file
+                
+                # If we found a valid file and could parse its date
+                if file_date and file_path:
+                    # Apply date range filters
+                    if start_date and file_date.date() < start_date:
+                        continue
+                    if end_date and file_date.date() > end_date:
+                        continue
+                    
                     log_files.append({
-                        'path': log_file,
-                        'date': folder_date,
-                        'folder_name': folder_name
+                        'path': file_path,
+                        'date': file_date,
+                        'folder_name': os.path.basename(file_path)
                     })
         
         except Exception as e:
@@ -102,17 +142,21 @@ class LogDataProcessor:
 
     def process_multiple_files(self, file_paths):
         """Process multiple log files and combine their data"""
-        dfs = []
+        combined_data = {}
+        
         for file_path in file_paths:
             df = self.read_log_file(file_path)
-            if df is not None:
-                dfs.append(df)
+            if df is None:
+                continue
+                
+            # Initialize combined data on first file
+            if not combined_data:
+                for col in df.columns:
+                    combined_data[col] = df[col]
+            else:
+                # Add data from subsequent files
+                for col in df.columns:
+                    if col in combined_data:
+                        combined_data[col] = pd.concat([combined_data[col], df[col]])
         
-        if not dfs:
-            return None
-            
-        # Combine all dataframes
-        combined_df = pd.concat(dfs, sort=True)
-        # Sort by timestamp
-        combined_df.sort_index(inplace=True)
-        return combined_df
+        return combined_data if combined_data else None
