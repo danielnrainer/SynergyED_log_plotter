@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 from datetime import datetime
+import re
 
 class LogDataProcessor:
     COLUMNS = [
@@ -23,40 +24,32 @@ class LogDataProcessor:
             self.base_dir = os.getcwd()
 
     def parse_folder_name(self, folder_name):
-        """Parse datetime from folder name in either format:
-        Old format: Mon-May-12-12-48-37-2025_EDAutoLog
-        New format: 2025_05_14_08h19m10_Jeol_MicroED.dat
-        """
-        try:
-            # Try new format first
-            if folder_name.count('_') >= 3 and 'h' in folder_name and 'm' in folder_name:
-                return self.parse_new_format(folder_name)
-            
-            # Try old format
-            date_part = folder_name.split('_')[0]
-            return datetime.strptime(date_part, '%a-%b-%d-%H-%M-%S-%Y')
-        except (ValueError, IndexError):
-            return None
-            
-    def parse_new_format(self, filename):
-        """Parse datetime from new format: 2025_05_14_08h19m10_Jeol_MicroED.dat"""
-        try:
-            # Split the filename and take the first 4 parts (date and time)
-            parts = filename.split('_')[:4]
-            if len(parts) < 4:
+        """Parse datetime from folder name in any supported format."""
+        # Format 1: 2025-07-01_08-23-56_EDAutoLog
+        m = re.match(r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})", folder_name)
+        if m:
+            try:
+                return datetime(
+                    int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                    int(m.group(4)), int(m.group(5)), int(m.group(6))
+                )
+            except ValueError:
                 return None
-                
-            year, month, day = map(int, parts[:3])
-            time_part = parts[3]
-            
-            # Parse time part (format: 08h19m10)
-            hour = int(time_part.split('h')[0])
-            minute = int(time_part.split('h')[1].split('m')[0])
-            second = int(time_part.split('m')[1].split('_')[0])
-            
-            return datetime(year, month, day, hour, minute, second)
-        except (ValueError, IndexError):
-            return None
+        # Format 2: Mon-Jun-30-2025_EDAutoLog
+        m = re.match(r"^(\w{3})-(\w{3})-(\d{2})-(\d{4})", folder_name)
+        if m:
+            try:
+                return datetime.strptime("-".join(m.groups()), "%a-%b-%d-%Y")
+            except ValueError:
+                return None
+        # Format 3: Mon-Jun-23-08-56-11-2025_EDAutoLog
+        m = re.match(r"^(\w{3})-(\w{3})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{4})", folder_name)
+        if m:
+            try:
+                return datetime.strptime("-".join(m.groups()), "%a-%b-%d-%H-%M-%S-%Y")
+            except ValueError:
+                return None
+        return None
 
     def read_log_file(self, file_path):
         """Read and parse an EDAutoLog.dat file"""
