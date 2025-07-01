@@ -35,7 +35,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='CIF_checker',
+    name='SynergyED_log_plotter',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

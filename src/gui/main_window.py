@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                              QListWidget, QSplitter, QDateEdit,
                              QComboBox, QCheckBox, QGroupBox,
                              QFileDialog)
-from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtCore import Qt, QDate, QTimer
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -27,6 +27,11 @@ class MainWindow(QMainWindow):
         self.data_processor = LogDataProcessor()
         self.available_files = []
         self.current_data = None
+        
+        # Timer for live plotting
+        self.live_plot_timer = QTimer(self)
+        self.live_plot_timer.timeout.connect(self.update_live_plot)
+        self.live_plot_enabled = False
         
         # Create panels
         self.create_left_panel()
@@ -136,6 +141,13 @@ class MainWindow(QMainWindow):
         self.show_stats = QCheckBox("Show Statistics")
         self.show_stats.setChecked(False)
         layout.addWidget(self.show_stats)
+        
+        # Add Live Plot toggle button
+        self.live_plot_btn = QPushButton("Enable Live Plot")
+        self.live_plot_btn.setCheckable(True)
+        self.live_plot_btn.setChecked(False)
+        self.live_plot_btn.clicked.connect(self.toggle_live_plot)
+        layout.addWidget(self.live_plot_btn)
         
         # Add stretch to push everything up
         layout.addStretch()
@@ -326,3 +338,42 @@ class MainWindow(QMainWindow):
             self.data_processor.base_dir = new_dir
             self.dir_label.setText(new_dir)
             self.refresh_file_list()  # Refresh the file list with the new directory
+    
+    def toggle_live_plot(self):
+        if self.live_plot_btn.isChecked():
+            self.live_plot_btn.setText("Disable Live Plot")
+            self.live_plot_enabled = True
+            self.live_plot_timer.start(2000)  # Update every 2 seconds
+        else:
+            self.live_plot_btn.setText("Enable Live Plot")
+            self.live_plot_enabled = False
+            self.live_plot_timer.stop()
+
+    def update_live_plot(self):
+        import os
+        base_dir = self.data_processor.base_dir
+        # Search for all EDAutoLog.dat files in subfolders and directly
+        candidates = []
+        for root, dirs, files in os.walk(base_dir):
+            for file in files:
+                if file == 'EDAutoLog.dat':
+                    candidates.append(os.path.join(root, file))
+        if not candidates:
+            return
+        # Find the most recently modified file
+        latest_file = max(candidates, key=os.path.getmtime)
+        # Update the file list selection to this file
+        self.file_list.clear()
+        self.file_list.addItem(os.path.basename(latest_file))
+        self.available_files = [{
+            'path': latest_file,
+            'date': self.data_processor.parse_folder_name(os.path.basename(os.path.dirname(latest_file))),
+            'folder_name': os.path.basename(os.path.dirname(latest_file))
+        }]
+        # Select the only file
+        self.file_list.setCurrentRow(0)
+        # Plot with currently selected parameters (or default if none)
+        if not self.param_list.selectedItems():
+            # Select the first parameter by default
+            self.param_list.setCurrentRow(0)
+        self.plot_selected()
