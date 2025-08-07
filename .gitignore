@@ -6,3 +6,4 @@
 *.swp
 *.bak
 *.orig
+.github/copilot-instructions.md

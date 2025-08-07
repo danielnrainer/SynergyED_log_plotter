@@ -86,6 +86,20 @@ class LogDataProcessor:
             print(f"Error reading file {file_path}: {str(e)}")
             return None
 
+    def extract_file_date_range(self, file_path):
+        """Extract the date range from file contents"""
+        try:
+            df = self.read_log_file(file_path)
+            if df is not None and not df.empty:
+                return {
+                    'start': df.index[0],
+                    'end': df.index[-1],
+                    'representative': df.index[0]  # Use first timestamp as representative
+                }
+        except Exception as e:
+            print(f"Error extracting dates from {file_path}: {str(e)}")
+        return None
+
     def get_log_files(self, start_date=None, end_date=None):
         """Get all log files within the specified date range"""
         log_files = []
@@ -95,43 +109,53 @@ class LogDataProcessor:
                 print(f"Warning: Base directory {self.base_dir} not found.")
                 return log_files
             
-            # Look for files in both old and new formats
-            for item_name in os.listdir(self.base_dir):
-                file_date = None
-                file_path = None
-                
-                # Check for old format (folder with EDAutoLog.dat inside)
-                if item_name.endswith('_EDAutoLog'):
-                    old_log_file = os.path.join(self.base_dir, item_name, 'EDAutoLog.dat')
-                    if os.path.exists(old_log_file):
-                        file_date = self.parse_folder_name(item_name)
-                        file_path = old_log_file
-                
-                # Check for new format (direct .dat file)
-                elif item_name.endswith('_Jeol_MicroED.dat'):
-                    new_log_file = os.path.join(self.base_dir, item_name)
-                    if os.path.exists(new_log_file):
-                        file_date = self.parse_folder_name(item_name)
-                        file_path = new_log_file
-                
-                # If we found a valid file and could parse its date
-                if file_date and file_path:
-                    # Apply date range filters
-                    if start_date and file_date.date() < start_date:
-                        continue
-                    if end_date and file_date.date() > end_date:
-                        continue
+            # Recursively look for log files in any folder structure
+            for root, _, files in os.walk(self.base_dir):
+                for filename in files:
+                    file_path = None
+                    file_date = None
                     
-                    log_files.append({
-                        'path': file_path,
-                        'date': file_date,
-                        'folder_name': os.path.basename(file_path)
-                    })
+                    # Check for any potential log file
+                    if filename == 'EDAutoLog.dat' or filename.endswith('_Jeol_MicroED.dat'):
+                        file_path = os.path.join(root, filename)
+                        
+                        # Try to get date from folder name first
+                        folder_name = os.path.basename(os.path.dirname(file_path))
+                        file_date = self.parse_folder_name(folder_name)
+                        
+                        # If folder name parsing fails, extract dates from file contents
+                        if not file_date:
+                            date_info = self.extract_file_date_range(file_path)
+                            if date_info:
+                                file_date = date_info['representative']
+                    
+                    # If we found a valid file and could get its date
+                    if file_path and file_date:
+                        # Apply date range filters
+                        if start_date and file_date.date() < start_date:
+                            continue
+                        if end_date and file_date.date() > end_date:
+                            continue
+                        
+                        log_files.append({
+                            'path': file_path,
+                            'date': file_date,
+                            'folder_name': os.path.relpath(os.path.dirname(file_path), self.base_dir)
+                        })
         
         except Exception as e:
             print(f"Error scanning log directory: {str(e)}")
         
-        return sorted(log_files, key=lambda x: x['date'])
+        # Sort files by date
+        sorted_files = sorted(log_files, key=lambda x: x['date'])
+        
+        # Update the display names to be more informative
+        for file_info in sorted_files:
+            date_str = file_info['date'].strftime('%Y-%m-%d %H:%M:%S')
+            rel_path = file_info['folder_name']
+            file_info['folder_name'] = f"{date_str} - {rel_path}"
+        
+        return sorted_files
 
     def process_multiple_files(self, file_paths):
         """Process multiple log files and combine their data"""
