@@ -35,6 +35,10 @@ class MainWindow(QMainWindow):
         self.current_data = None
         self.param_widgets = {}
         
+        # Initialize live plot variables
+        self.live_plot_start_date = None
+        self.live_plot_start_time = None
+        
         # Timer for live plotting
         self.live_plot_timer = QTimer(self)
         self.live_plot_timer.timeout.connect(self.update_live_plot)
@@ -183,6 +187,10 @@ class MainWindow(QMainWindow):
             quick_end_date, quick_end_time
         ))
         quick_plot_layout.addWidget(quick_plot_btn)
+        
+        # Store references to quick plot widgets for live plotting
+        self.quick_start_date = quick_start_date
+        self.quick_start_time = quick_start_time
         
         # Set the content layout for the group
         quick_plot_group.setContentLayout(quick_plot_layout)
@@ -420,19 +428,28 @@ class MainWindow(QMainWindow):
         
         # Create a single plot for all parameters with extra space on right for multiple axes
         ax = self.figure.add_subplot(111)
+        
+        # Calculate margins based on number of additional y-axes
+        num_extra_axes = len(selected_params) - 1  # Subtract 1 for main axis
+        
+        # Adjust right margin: start at 0.85 and reduce for each additional axis
+        right_margin = 0.85 - (0.05 * num_extra_axes)
+        
         # Adjust the subplot parameters to give specified padding for axes and labels
         self.figure.subplots_adjust(
-            right=0.85,  # Make room for multiple y-axes
-            bottom=0.2,  # Make room for x-axis labels
-            left=0.1,    # Left margin
-            top=0.9      # Top margin
+            right=right_margin,  # Dynamic right margin for multiple y-axes
+            bottom=0.2,         # Make room for x-axis labels and legend
+            left=0.1,          # Left margin
+            top=0.9            # Top margin
         )
         
         # Get default color cycle from matplotlib
         prop_cycle = plt.rcParams['axes.prop_cycle']
         colors = prop_cycle.by_key()['color']
         
-        # Create the first y-axis
+        # Initial figure size
+        base_width = 10  # Base width in inches
+        self.figure.set_size_inches(base_width, self.figure.get_size_inches()[1])        # Create the first y-axis
         main_ax = ax
         main_param = selected_params[0]
         axes = [main_ax]  # Keep track of all axes for grid settings
@@ -552,7 +569,7 @@ class MainWindow(QMainWindow):
         
         # Format the date/time axis
         # ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d\n%H:%M:%S')) # in case we need it more explicit
-        # ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d\n%H:%M:%S'))  # Shorter format
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d\n%H:%M:%S'))  # Shorter format
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
         
         # Rotate labels for better readability
@@ -564,25 +581,61 @@ class MainWindow(QMainWindow):
         
         # Add legend at the bottom of the plot
         if self.show_legend.isChecked():
-            # Create a single legend for all axes
-            handles, labels = ax.get_legend_handles_labels()
-            for a in axes[1:]:
-                h, l = a.get_legend_handles_labels()
-                handles.extend(h)
-                labels.extend(l)
-            # Legend should already have exactly one entry per parameter
-            # Sort the labels/handles to maintain consistent order
-            combined = list(zip(labels, handles))
-            combined.sort(key=lambda x: x[0])  # Sort by parameter name
-            labels, handles = zip(*combined)
+            # Collect all handles and labels
+            all_axes = [main_ax] + [ax for ax in self.figure.axes if ax != main_ax]  # Get all axes properly
+            all_handles = []
+            all_labels = []
+            
+            # Add entries for each parameter with their respective colors
+            for i, param in enumerate(selected_params):
+                color = colors[i % len(colors)]
+                if plot_type in ["Line Plot", "Both"]:
+                    line = plt.Line2D([], [], color=color, linestyle='-', label=param)
+                    all_handles.append(line)
+                    all_labels.append(param)
+                if plot_type in ["Scatter Plot", "Both"]:
+                    scatter = plt.Line2D([], [], color=color, marker='o', linestyle='None', 
+                                       alpha=0.5, label=param)
+                    if plot_type == "Both":
+                        # For "Both", only add label once
+                        scatter.set_label('_' + param)  # Hidden label
+                    all_handles.append(scatter)
+                    all_labels.append(param if plot_type == "Scatter Plot" else '_' + param)
+            
+            # Sort entries by parameter name
+            combined = [(label, handle) for label, handle in zip(all_labels, all_handles) 
+                       if not label.startswith('_')]  # Exclude hidden labels
+            combined.sort(key=lambda x: x[0])
+            sorted_labels, sorted_handles = zip(*combined) if combined else ([], [])
+            
             # Adjust the subplot to make room for the legend at the bottom
             self.figure.subplots_adjust(bottom=0.2)  # Make room for legend
-            ax.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, -0.15),
-                     ncol=min(3, len(labels)))  # Use up to 3 columns
+            
+            # Create legend with sorted entries
+            ax.legend(sorted_handles, sorted_labels, 
+                     loc='upper center', bbox_to_anchor=(0.5, -0.15),
+                     ncol=min(3, len(sorted_labels)))  # Use up to 3 columns
         
         try:
-            # Draw the updated figure
+            # Draw the figure first to get proper sizing
             self.canvas.draw()
+            
+            # Now adjust the figure size based on actual axis positions
+            bbox = self.figure.get_tightbbox(self.figure.canvas.get_renderer())
+            if bbox is not None:
+                # Calculate required width from bbox, convert from points to inches
+                required_width = (bbox.width + 20) / self.figure.dpi  # Add 20 points padding
+                current_size = self.figure.get_size_inches()
+                
+                # Ensure minimum width and adjust if needed
+                new_width = max(base_width, required_width)
+                if new_width > current_size[0]:
+                    self.figure.set_size_inches(new_width, current_size[1])
+                    
+                    # Update canvas and window size
+                    self.canvas.draw()
+                    self.canvas.setMinimumWidth(int(new_width * self.figure.dpi))
+                    
         except Exception as e:
             print(f"Error drawing plot: {str(e)}")
             # Clear the figure and try to recover
@@ -612,6 +665,9 @@ class MainWindow(QMainWindow):
     
     def toggle_live_plot(self):
         if self.live_plot_btn.isChecked():
+            # When enabling live plot, store the current time as end time
+            self.live_plot_start_date = self.quick_start_date.date()
+            self.live_plot_start_time = self.quick_start_time.time()
             self.live_plot_btn.setText("Disable Live Plot")
             self.live_plot_enabled = True
             self.live_plot_timer.start(2000)  # Update every 2 seconds
@@ -680,31 +736,40 @@ class MainWindow(QMainWindow):
         self.plot_selected(files_to_plot)
 
     def update_live_plot(self):
-        import os
-        base_dir = self.data_processor.base_dir
-        # Search for all EDAutoLog.dat files in subfolders and directly
-        candidates = []
-        for root, dirs, files in os.walk(base_dir):
-            for file in files:
-                if file == 'EDAutoLog.dat':
-                    candidates.append(os.path.join(root, file))
-        if not candidates:
-            return
-        # Find the most recently modified file
-        latest_file = max(candidates, key=os.path.getmtime)
-        # Update the file list selection to this file
+        """Update the plot in live mode using the time range approach"""
+        # Use stored start time and current time as the range
+        start_datetime = datetime.combine(
+            self.live_plot_start_date.toPyDate(),
+            self.live_plot_start_time.toPyTime()
+        )
+        end_datetime = datetime.now()
+        
+        # Get all files in the date range
+        self.available_files = self.data_processor.get_log_files(
+            start_datetime.date(),
+            end_datetime.date()
+        )
+        
+        # Filter files by exact datetime
+        files_to_plot = [
+            file['path'] for file in self.available_files
+            if start_datetime <= file['date'] <= end_datetime
+        ]
+        
+        if not files_to_plot:
+            return  # Don't show warning in live mode, just skip update
+            
+        # Update file list to show what's being plotted
         self.file_list.clear()
-        self.file_list.addItem(os.path.basename(latest_file))
-        self.available_files = [{
-            'path': latest_file,
-            'date': self.data_processor.parse_folder_name(os.path.basename(os.path.dirname(latest_file))),
-            'folder_name': os.path.basename(os.path.dirname(latest_file))
-        }]
-        # Select the only file
-        self.file_list.setCurrentRow(0)
+        for file_info in [f for f in self.available_files if f['path'] in files_to_plot]:
+            time_str = file_info['date'].strftime('%H:%M:%S')
+            self.file_list.addItem(time_str)
+            
         # Plot with currently selected parameters (or default if none)
         if not any(widgets['param_checkbox'].isChecked() for widgets in self.param_widgets.values()):
             # Select the first parameter by default
             first_param = next(iter(self.param_widgets))
             self.param_widgets[first_param]['param_checkbox'].setChecked(True)
-        self.plot_selected()
+            
+        # Plot the data using the time range
+        self.plot_selected(files_to_plot)
