@@ -44,6 +44,10 @@ class MainWindow(QMainWindow):
         self.live_plot_timer.timeout.connect(self.update_live_plot)
         self.live_plot_enabled = False
         
+        # Initialize view limit storage
+        self.stored_xlim = None
+        self.stored_ylims = {}
+        
         # Create panels
         self.create_left_panel()
         self.create_right_panel()
@@ -279,12 +283,12 @@ class MainWindow(QMainWindow):
                 'HT [kV]': (0, 200),
                 'Beam Current [uA]': (0, 110),
                 'Filament Current [A]': (0, 2.5),
-                'Penning PeG1': (0, 270),
-                'Column PiG1': (0, 270),
-                'Gun PiG2': (0, 270),
-                'Detector PiG3': (0, 270),
-                'Specimen PiG4': (0, 270),
-                'RT1 PiG5': (0, 270),
+                'Penning PeG1 [uA]': (0, 270),
+                'Column PiG1 [uA]': (0, 270),
+                'Gun PiG2 [uA]': (0, 270),
+                'Detector PiG3 [uA]': (0, 270),
+                'Specimen PiG4 [uA]': (0, 270),
+                'RT1 PiG5 [uA]': (0, 270),
                 # 'Bias coarse': (0, 1),
                 # 'Bias fine': (0, 1),
                 # 'Stage X [um]': (0, 500),
@@ -333,7 +337,7 @@ class MainWindow(QMainWindow):
         settings_layout.addLayout(plot_options_layout)
         
         self.show_legend = QCheckBox("Show Legend")
-        self.show_legend.setChecked(False)  # Default to not showing legend
+        self.show_legend.setChecked(True)
         settings_layout.addWidget(self.show_legend)
         
         # Set the content layout for the settings group
@@ -419,7 +423,14 @@ class MainWindow(QMainWindow):
         selected_params = [param for param, widgets in self.param_widgets.items() if widgets['param_checkbox'].isChecked()]
         if not selected_params:
             return
+            
+        # Group PiG parameters and other parameters
+        pig_params = [param for param in selected_params if 'PiG' in param]
+        other_params = [param for param in selected_params if 'PiG' not in param]
         
+        # Reorder parameters to ensure PiG params are handled together
+        selected_params = other_params + pig_params
+            
         # Get the selected plot type
         plot_type = self.plot_type.currentText()
         
@@ -427,9 +438,7 @@ class MainWindow(QMainWindow):
         self.figure.clear()
         
         # Create a single plot for all parameters with extra space on right for multiple axes
-        ax = self.figure.add_subplot(111)
-        
-        # Calculate margins based on number of additional y-axes
+        ax = self.figure.add_subplot(111)        # Calculate margins based on number of additional y-axes
         num_extra_axes = len(selected_params) - 1  # Subtract 1 for main axis
         
         # Adjust right margin: start at 0.85 and reduce for each additional axis
@@ -454,6 +463,14 @@ class MainWindow(QMainWindow):
         main_param = selected_params[0]
         axes = [main_ax]  # Keep track of all axes for grid settings
         param_data = {}  # Store data ranges for each parameter
+        
+        # Set up PiG axis - either use main_ax if first param is PiG, or create new one
+        if 'PiG' in main_param:
+            pig_axis = main_ax
+            main_ax.set_ylabel("PiG Current [uA]", color=colors[0])
+            main_ax.tick_params(axis='y', labelcolor=colors[0])
+        else:
+            pig_axis = None
         
         # Plot first parameter on main axis
         color = colors[0]
@@ -505,15 +522,29 @@ class MainWindow(QMainWindow):
                 main_ax.set_ylim(param_data[main_param]['min'] - y_pad, param_data[main_param]['max'] + y_pad)
         
         # Create additional axes for other parameters
+        num_additional_axes = 0  # Counter for non-PiG additional axes
+        
         for i, param in enumerate(selected_params[1:], 1):
-            # Create new axis sharing x-axis with main plot
-            new_ax = main_ax.twinx()
-            
-            # If this is not the first additional axis, offset it to the right
-            if i > 1:
-                # Calculate offset based on number of parameters
-                offset = (i - 1) * 60  # Offset in points
-                new_ax.spines['right'].set_position(('outward', offset))
+            if 'PiG' in param:
+                # If we don't have a PiG axis yet, create one (unless main_ax is already PiG)
+                if pig_axis is None and pig_axis is not main_ax:
+                    pig_axis = main_ax.twinx()
+                    # Position PiG axis on the right if needed
+                    if num_additional_axes > 0:
+                        offset = num_additional_axes * 60
+                        pig_axis.spines['right'].set_position(('outward', offset))
+                    pig_axis.set_ylabel("PiG [uA]", color=colors[i % len(colors)])
+                    pig_axis.set_ylim(0, 270)
+                new_ax = pig_axis if pig_axis is not None else main_ax
+            else:
+                # Create new axis for non-PiG parameter
+                new_ax = main_ax.twinx()
+                num_additional_axes += 1
+                
+                # If this is not the first additional axis, offset it to the right
+                if num_additional_axes > 1:
+                    offset = (num_additional_axes - 1) * 60
+                    new_ax.spines['right'].set_position(('outward', offset))
             
             color = colors[i % len(colors)]
             
@@ -541,7 +572,11 @@ class MainWindow(QMainWindow):
                     new_ax.scatter([], [], color=color, alpha=0.5, label=param)
             
             # Set axis properties
-            new_ax.set_ylabel(self.get_axis_label(param), color=color)
+            if not 'PiG' in param:
+                # For non-PiG parameters, set full axis properties
+                new_ax.set_ylabel(self.get_axis_label(param), color=color)
+            
+            # Always set these properties regardless of parameter type
             new_ax.tick_params(axis='y', labelcolor=color)
             new_ax.spines['right'].set_color(color)
             
@@ -564,15 +599,19 @@ class MainWindow(QMainWindow):
             # Set number of ticks based on axis height
             new_ax.yaxis.set_major_locator(MaxNLocator(6))  # Use imported MaxNLocator
         
-        # Set common x-axis label and format
-        ax.set_xlabel("Time")
-        
+            # If we have a PiG axis, make sure it's properly labeled
+            if pig_axis is not None:
+                # Clear any existing labels that might have been set
+                pig_axis.set_ylabel("PiG-# [uA]", color=colors[selected_params.index(next(p for p in selected_params if 'PiG' in p))])
+                pig_axis.set_ylim(0, 270)
+            
+            # Set common x-axis label and format
+            ax.set_xlabel("Time")
+            
         # Format the date/time axis
         # ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d\n%H:%M:%S')) # in case we need it more explicit
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d\n%H:%M:%S'))  # Shorter format
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        
-        # Rotate labels for better readability
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d\n%H:%M'))  # Shorter format
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())        # Rotate labels for better readability
         plt.setp(ax.xaxis.get_majorticklabels(), ha='center')
         
         # Set grid for all axes
@@ -614,7 +653,7 @@ class MainWindow(QMainWindow):
             # Create legend with sorted entries
             ax.legend(sorted_handles, sorted_labels, 
                      loc='upper center', bbox_to_anchor=(0.5, -0.15),
-                     ncol=min(3, len(sorted_labels)))  # Use up to 3 columns
+                     ncol=min(3, len(sorted_labels)))  # Use up to 5 columns
         
         try:
             # Draw the figure first to get proper sizing
@@ -694,17 +733,22 @@ class MainWindow(QMainWindow):
             end_datetime.date()
         )
         
-        # Filter files by exact datetime
-        files_to_plot = [
-            file['path'] for file in self.available_files
-            if start_datetime <= file['date'] <= end_datetime
-        ]
+        # Filter files that contain data within the requested time range
+        files_to_plot = []
+        for file_info in self.available_files:
+            df = self.data_processor.read_log_file(file_info['path'])
+            if df is not None and not df.empty:
+                file_start = df.index[0]
+                file_end = df.index[-1]
+                # Check if file's time range overlaps with requested range
+                if (file_start <= end_datetime and file_end >= start_datetime):
+                    files_to_plot.append(file_info['path'])
         
         if not files_to_plot:
             QMessageBox.warning(
                 self,
                 "No Data",
-                f"No log files found between {start_datetime} and {end_datetime}"
+                f"No data found between {start_datetime} and {end_datetime}"
             )
             return
         
@@ -737,6 +781,15 @@ class MainWindow(QMainWindow):
 
     def update_live_plot(self):
         """Update the plot in live mode using the time range approach"""
+        # Store current axis limits if they exist
+        xlim = None
+        ylims = {}
+        if self.figure.axes:
+            xlim = self.figure.axes[0].get_xlim()
+            for ax in self.figure.axes:
+                if ax.get_ylabel():  # Only store if the axis has a label
+                    ylims[ax.get_ylabel()] = ax.get_ylim()
+        
         # Use stored start time and current time as the range
         start_datetime = datetime.combine(
             self.live_plot_start_date.toPyDate(),
@@ -750,11 +803,20 @@ class MainWindow(QMainWindow):
             end_datetime.date()
         )
         
-        # Filter files by exact datetime
-        files_to_plot = [
-            file['path'] for file in self.available_files
-            if start_datetime <= file['date'] <= end_datetime
-        ]
+        # Store the limits to use after plotting
+        self.stored_xlim = xlim
+        self.stored_ylims = ylims
+        
+        # Filter files that contain data within the requested time range
+        files_to_plot = []
+        for file_info in self.available_files:
+            df = self.data_processor.read_log_file(file_info['path'])
+            if df is not None and not df.empty:
+                file_start = df.index[0]
+                file_end = df.index[-1]
+                # Check if file's time range overlaps with requested range
+                if (file_start <= end_datetime and file_end >= start_datetime):
+                    files_to_plot.append(file_info['path'])
         
         if not files_to_plot:
             return  # Don't show warning in live mode, just skip update
