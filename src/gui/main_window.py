@@ -936,11 +936,21 @@ class MainWindow(QMainWindow):
                 
             current_time = datetime.now()
             
-            # Get the latest data point
-            if current_data.empty:
-                return
-                
-            latest_data = current_data.iloc[-1]
+            # Handle both dictionary format (from process_multiple_files) and DataFrame format
+            if isinstance(current_data, dict):
+                # Convert dictionary format to DataFrame for easier handling
+                import pandas as pd
+                if not current_data:
+                    return
+                df = pd.DataFrame(current_data)
+                if df.empty:
+                    return
+                latest_data = df.iloc[-1]
+            else:
+                # DataFrame format
+                if current_data.empty:
+                    return
+                latest_data = current_data.iloc[-1]
             
             # Check each trigger condition
             for trigger in self.trigger_conditions:
@@ -950,24 +960,31 @@ class MainWindow(QMainWindow):
                         
                         # Check if trigger condition is met
                         if trigger.check_condition(current_value, current_time):
-                            # Send alert email
-                            subject = f"{trigger.parameter_name} Alert"
-                            message = f"Alert triggered: {trigger.get_description()}"
-                            
-                            success = self.email_notifier.send_alert(
-                                subject, 
-                                message, 
-                                trigger.parameter_name, 
-                                current_value, 
-                                trigger.threshold_value
-                            )
-                            
-                            if success:
-                                print(f"Alert sent for {trigger.parameter_name}: {current_value}")
+                            # Check if we can send an email (respecting cooldown)
+                            if trigger.can_send_email(current_time):
+                                # Send alert email
+                                subject = f"{trigger.parameter_name} Alert"
+                                message = f"Alert triggered: {trigger.get_description()}\n\nCurrent value: {current_value}"
+                                
+                                success = self.email_notifier.send_alert(
+                                    subject, 
+                                    message, 
+                                    trigger.parameter_name, 
+                                    current_value, 
+                                    trigger.threshold_value
+                                )
+                                
+                                if success:
+                                    trigger.mark_email_sent(current_time)
+                                    print(f"Alert sent for {trigger.parameter_name}: {current_value} (email sent)")
+                                else:
+                                    print(f"Failed to send alert for {trigger.parameter_name}")
                             else:
-                                print(f"Failed to send alert for {trigger.parameter_name}")
+                                # Trigger met but email cooldown active
+                                time_remaining = trigger.email_cooldown_minutes - ((current_time - trigger.last_email_sent).total_seconds() / 60)
+                                print(f"Trigger active for {trigger.parameter_name}: {current_value}, but email cooldown active ({time_remaining:.1f} min remaining)")
                     else:
-                        print(f"Warning: Parameter '{trigger.parameter_name}' not found in current data")
+                        print(f"Warning: Parameter '{trigger.parameter_name}' not found in current data. Available parameters: {list(latest_data.index)}")
                         
                 except Exception as e:
                     print(f"Error checking trigger for {trigger.parameter_name}: {str(e)}")

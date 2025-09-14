@@ -264,7 +264,9 @@ class EmailConfigDialog(QDialog):
         current_row = self.triggers_list.currentRow()
         if current_row >= 0:
             self.triggers_list.takeItem(current_row)
-            del self.trigger_conditions[current_row]
+            # Remove the trigger from the list
+            removed_trigger = self.trigger_conditions.pop(current_row)
+            print(f"Removed trigger: {removed_trigger.get_description()}")
             
     def send_test_alert(self):
         """Send a test alert email"""

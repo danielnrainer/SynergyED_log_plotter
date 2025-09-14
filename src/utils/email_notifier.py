@@ -114,6 +114,8 @@ class TriggerCondition:
         self.monitoring_start_time = None  # For time_bounded and delayed_activation
         self.is_active = False
         self.last_triggered = None
+        self.last_email_sent = None  # Track when last email was sent
+        self.email_cooldown_minutes = 30  # 30-minute cooldown between emails
         
     def check_condition(self, current_value, current_time):
         """Check if the trigger condition is met"""
@@ -189,6 +191,18 @@ class TriggerCondition:
                     self.is_active = False
                     
         return False
+        
+    def can_send_email(self, current_time):
+        """Check if an email can be sent (respecting cooldown period)"""
+        if self.last_email_sent is None:
+            return True
+            
+        time_since_last_email = (current_time - self.last_email_sent).total_seconds() / 60
+        return time_since_last_email >= self.email_cooldown_minutes
+        
+    def mark_email_sent(self, current_time):
+        """Mark that an email was sent at the current time"""
+        self.last_email_sent = current_time
         
     def get_description(self):
         """Get a human-readable description of the trigger condition"""
