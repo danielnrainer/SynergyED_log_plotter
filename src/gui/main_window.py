@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                              QFileDialog, QMessageBox, QFrame, QScrollArea,
                              QSizePolicy)
 from .collapsible_box import QCollapsibleBox
+from .email_config_dialog import EmailConfigDialog
 import os
 from datetime import datetime
 from PyQt6.QtCore import Qt, QDate, QTime, QTimer
@@ -16,7 +17,9 @@ from matplotlib.backends.backend_qt import NavigationToolbar2QT as NavigationToo
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.ticker import MaxNLocator
+from matplotlib.lines import Line2D
 from utils.data_processor import LogDataProcessor
+from utils.email_notifier import EmailNotifier, TriggerCondition
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -34,6 +37,10 @@ class MainWindow(QMainWindow):
         self.available_files = []
         self.current_data = None
         self.param_widgets = {}
+        
+        # Initialize email notification system
+        self.email_notifier = EmailNotifier()
+        self.trigger_conditions = []
         
         # Initialize live plot variables
         self.live_plot_start_date = None
@@ -345,6 +352,28 @@ class MainWindow(QMainWindow):
         
         layout.addWidget(settings_group)
         
+        # Email Notifications Group
+        notifications_group = QCollapsibleBox("Email Notifications")
+        notifications_layout = QVBoxLayout()
+        
+        # Configure email button
+        configure_email_btn = QPushButton("Configure Email Alerts")
+        configure_email_btn.clicked.connect(self.configure_email_notifications)
+        notifications_layout.addWidget(configure_email_btn)
+        
+        # Status label
+        self.email_status_label = QLabel("Email notifications not configured")
+        self.email_status_label.setWordWrap(True)
+        notifications_layout.addWidget(self.email_status_label)
+        
+        # Trigger status area
+        self.trigger_status_label = QLabel("No active triggers")
+        self.trigger_status_label.setWordWrap(True)
+        notifications_layout.addWidget(self.trigger_status_label)
+        
+        notifications_group.setContentLayout(notifications_layout)
+        layout.addWidget(notifications_group)
+        
         # Add Live Plot toggle button
         self.live_plot_btn = QPushButton("Enable Live Plot")
         self.live_plot_btn.setCheckable(True)
@@ -629,11 +658,11 @@ class MainWindow(QMainWindow):
             for i, param in enumerate(selected_params):
                 color = colors[i % len(colors)]
                 if plot_type in ["Line Plot", "Both"]:
-                    line = plt.Line2D([], [], color=color, linestyle='-', label=param)
+                    line = Line2D([], [], color=color, linestyle='-', label=param)
                     all_handles.append(line)
                     all_labels.append(param)
                 if plot_type in ["Scatter Plot", "Both"]:
-                    scatter = plt.Line2D([], [], color=color, marker='o', linestyle='None', 
+                    scatter = Line2D([], [], color=color, marker='o', linestyle='None', 
                                        alpha=0.5, label=param)
                     if plot_type == "Both":
                         # For "Both", only add label once
@@ -659,21 +688,28 @@ class MainWindow(QMainWindow):
             # Draw the figure first to get proper sizing
             self.canvas.draw()
             
-            # Now adjust the figure size based on actual axis positions
-            bbox = self.figure.get_tightbbox(self.figure.canvas.get_renderer())
-            if bbox is not None:
-                # Calculate required width from bbox, convert from points to inches
-                required_width = (bbox.width + 20) / self.figure.dpi  # Add 20 points padding
-                current_size = self.figure.get_size_inches()
-                
-                # Ensure minimum width and adjust if needed
-                new_width = max(base_width, required_width)
-                if new_width > current_size[0]:
-                    self.figure.set_size_inches(new_width, current_size[1])
-                    
-                    # Update canvas and window size
-                    self.canvas.draw()
-                    self.canvas.setMinimumWidth(int(new_width * self.figure.dpi))
+            # Try to adjust the figure size based on actual axis positions
+            try:
+                # Attempt to get renderer - this may not work on all matplotlib backends
+                renderer = self.canvas.get_renderer()
+                if renderer is not None:
+                    bbox = self.figure.get_tightbbox(renderer)
+                    if bbox is not None:
+                        # Calculate required width from bbox, convert from points to inches
+                        required_width = (bbox.width + 20) / self.figure.dpi  # Add 20 points padding
+                        current_size = self.figure.get_size_inches()
+                        
+                        # Ensure minimum width and adjust if needed
+                        new_width = max(base_width, required_width)
+                        if new_width > current_size[0]:
+                            self.figure.set_size_inches(new_width, current_size[1])
+                            
+                            # Update canvas and window size
+                            self.canvas.draw()
+                            self.canvas.setMinimumWidth(int(new_width * self.figure.dpi))
+            except (AttributeError, TypeError):
+                # If get_renderer() is not available, skip the dynamic sizing
+                pass
                     
         except Exception as e:
             print(f"Error drawing plot: {str(e)}")
@@ -781,6 +817,11 @@ class MainWindow(QMainWindow):
 
     def update_live_plot(self):
         """Update the plot in live mode using the time range approach"""
+        # Check if live plotting is properly initialized
+        if self.live_plot_start_date is None or self.live_plot_start_time is None:
+            print("Live plot not properly initialized")
+            return
+            
         # Store current axis limits if they exist
         xlim = None
         ylims = {}
@@ -791,10 +832,14 @@ class MainWindow(QMainWindow):
                     ylims[ax.get_ylabel()] = ax.get_ylim()
         
         # Use stored start time and current time as the range
-        start_datetime = datetime.combine(
-            self.live_plot_start_date.toPyDate(),
-            self.live_plot_start_time.toPyTime()
-        )
+        if self.live_plot_start_date is not None and self.live_plot_start_time is not None:
+            start_datetime = datetime.combine(
+                self.live_plot_start_date.toPyDate(),
+                self.live_plot_start_time.toPyTime()
+            )
+        else:
+            # Fallback to current time if not properly initialized
+            start_datetime = datetime.now()
         end_datetime = datetime.now()
         
         # Get all files in the date range
@@ -835,3 +880,89 @@ class MainWindow(QMainWindow):
             
         # Plot the data using the time range
         self.plot_selected(files_to_plot)
+        
+        # Check email triggers after plotting (when current_data is updated)
+        self.check_email_triggers(self.current_data)
+        
+    def configure_email_notifications(self):
+        """Open email configuration dialog"""
+        dialog = EmailConfigDialog(self)
+        
+        # Set current configuration if available
+        if self.email_notifier.is_configured:
+            dialog.set_email_notifier(self.email_notifier)
+            dialog.set_trigger_conditions(self.trigger_conditions)
+            
+        if dialog.exec() == EmailConfigDialog.DialogCode.Accepted:
+            # Get the configured notifier and triggers
+            self.email_notifier = dialog.get_email_notifier()
+            self.trigger_conditions = dialog.get_trigger_conditions()
+            
+            # Update status labels
+            self.update_email_status()
+            
+    def update_email_status(self):
+        """Update email configuration status display"""
+        if self.email_notifier.is_configured:
+            self.email_status_label.setText("✓ Email notifications configured")
+            self.email_status_label.setStyleSheet("color: green;")
+        else:
+            self.email_status_label.setText("Email notifications not configured")
+            self.email_status_label.setStyleSheet("color: gray;")
+            
+        # Update trigger status
+        if self.trigger_conditions:
+            trigger_texts = [trigger.get_description() for trigger in self.trigger_conditions]
+            self.trigger_status_label.setText(f"Active triggers ({len(self.trigger_conditions)}):\n" + 
+                                            "\n".join(trigger_texts[:3]))  # Show first 3
+        else:
+            self.trigger_status_label.setText("No active triggers")
+            
+    def check_email_triggers(self, current_data):
+        """Check if any email triggers should be fired"""
+        try:
+            if not self.email_notifier.is_configured or not self.trigger_conditions or current_data is None:
+                return
+                
+            current_time = datetime.now()
+            
+            # Get the latest data point
+            if current_data.empty:
+                return
+                
+            latest_data = current_data.iloc[-1]
+            
+            # Check each trigger condition
+            for trigger in self.trigger_conditions:
+                try:
+                    if trigger.parameter_name in latest_data:
+                        current_value = latest_data[trigger.parameter_name]
+                        
+                        # Check if trigger condition is met
+                        if trigger.check_condition(current_value, current_time):
+                            # Send alert email
+                            subject = f"{trigger.parameter_name} Alert"
+                            message = f"Alert triggered: {trigger.get_description()}"
+                            
+                            success = self.email_notifier.send_alert(
+                                subject, 
+                                message, 
+                                trigger.parameter_name, 
+                                current_value, 
+                                trigger.threshold_value
+                            )
+                            
+                            if success:
+                                print(f"Alert sent for {trigger.parameter_name}: {current_value}")
+                            else:
+                                print(f"Failed to send alert for {trigger.parameter_name}")
+                    else:
+                        print(f"Warning: Parameter '{trigger.parameter_name}' not found in current data")
+                        
+                except Exception as e:
+                    print(f"Error checking trigger for {trigger.parameter_name}: {str(e)}")
+                    continue
+                        
+        except Exception as e:
+            print(f"Error in check_email_triggers: {str(e)}")
+            # Don't let email trigger errors crash the entire application

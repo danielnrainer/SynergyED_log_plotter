@@ -7,3 +7,5 @@
 *.bak
 *.orig
 .github/copilot-instructions.md
+dist/
+build/
