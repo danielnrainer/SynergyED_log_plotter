@@ -407,14 +407,14 @@ class MainWindow(QMainWindow):
         
         self.file_list.clear()
         for file_info in self.available_files:
-            # Create concise display text with just the time and unique folder part
-            time_str = file_info['date'].strftime('%H:%M:%S')
+            # Create display text with full date and time for consistency
+            date_str = file_info['date'].strftime('%Y-%m-%d %H:%M:%S')
             # Get the last part of the folder path (most relevant for identification)
             folder_name = os.path.basename(file_info['folder_name'])
             if folder_name.endswith('_EDAutoLog'):
                 folder_name = folder_name[:-10]  # Remove '_EDAutoLog' suffix
-            # display_text = f"{time_str} - {folder_name}"
-            display_text = f"{time_str}"
+            # display_text = f"{date_str} - {folder_name}"
+            display_text = f"{date_str}"
             self.file_list.addItem(display_text)    
     
     def get_axis_label(self, param):
@@ -788,8 +788,12 @@ class MainWindow(QMainWindow):
             )
             return
         
-        # Process the data
-        self.current_data = self.data_processor.process_multiple_files(files_to_plot)
+        # Process the data with datetime filtering
+        self.current_data = self.data_processor.process_multiple_files(
+            files_to_plot, 
+            start_datetime=start_datetime, 
+            end_datetime=end_datetime
+        )
         if self.current_data is None:
             return
             
@@ -832,14 +836,10 @@ class MainWindow(QMainWindow):
                     ylims[ax.get_ylabel()] = ax.get_ylim()
         
         # Use stored start time and current time as the range
-        if self.live_plot_start_date is not None and self.live_plot_start_time is not None:
-            start_datetime = datetime.combine(
-                self.live_plot_start_date.toPyDate(),
-                self.live_plot_start_time.toPyTime()
-            )
-        else:
-            # Fallback to current time if not properly initialized
-            start_datetime = datetime.now()
+        start_datetime = datetime.combine(
+            self.live_plot_start_date.toPyDate(),
+            self.live_plot_start_time.toPyTime()
+        )
         end_datetime = datetime.now()
         
         # Get all files in the date range
@@ -866,11 +866,21 @@ class MainWindow(QMainWindow):
         if not files_to_plot:
             return  # Don't show warning in live mode, just skip update
             
+        # Process the data with datetime filtering
+        self.current_data = self.data_processor.process_multiple_files(
+            files_to_plot,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime
+        )
+        
+        if self.current_data is None:
+            return
+            
         # Update file list to show what's being plotted
         self.file_list.clear()
         for file_info in [f for f in self.available_files if f['path'] in files_to_plot]:
-            time_str = file_info['date'].strftime('%H:%M:%S')
-            self.file_list.addItem(time_str)
+            date_str = file_info['date'].strftime('%Y-%m-%d %H:%M:%S')
+            self.file_list.addItem(date_str)
             
         # Plot with currently selected parameters (or default if none)
         if not any(widgets['param_checkbox'].isChecked() for widgets in self.param_widgets.values()):

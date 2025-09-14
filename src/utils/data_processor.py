@@ -157,14 +157,25 @@ class LogDataProcessor:
         
         return sorted_files
 
-    def process_multiple_files(self, file_paths):
-        """Process multiple log files and combine their data"""
+    def process_multiple_files(self, file_paths, start_datetime=None, end_datetime=None):
+        """Process multiple log files and combine their data, optionally filtering by datetime range"""
         combined_data = {}
         
         for file_path in file_paths:
             df = self.read_log_file(file_path)
             if df is None:
                 continue
+                
+            # Apply datetime filtering if specified
+            if start_datetime is not None or end_datetime is not None:
+                if start_datetime is not None:
+                    df = df[df.index >= start_datetime]
+                if end_datetime is not None:
+                    df = df[df.index <= end_datetime]
+                
+                # Skip file if no data remains after filtering
+                if df.empty:
+                    continue
                 
             # Initialize combined data on first file
             if not combined_data:
@@ -175,5 +186,14 @@ class LogDataProcessor:
                 for col in df.columns:
                     if col in combined_data:
                         combined_data[col] = pd.concat([combined_data[col], df[col]])
+        
+        # If we have combined data, sort by index (datetime) to ensure proper chronological order
+        if combined_data:
+            # Create a DataFrame from the combined data and sort by index
+            result_df = pd.DataFrame(combined_data)
+            result_df = result_df.sort_index()
+            
+            # Convert back to the expected dictionary format with Series
+            combined_data = {col: result_df[col] for col in result_df.columns}
         
         return combined_data if combined_data else None
