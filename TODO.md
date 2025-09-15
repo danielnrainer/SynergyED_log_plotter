@@ -11,6 +11,8 @@
 - [ ] Add more robust parameter validation
 - [ ] Optimize data processing performance for large datasets
 - [ ] Add unit tests for critical components
+- [ ] PiG colour on axis and label
+- [ ] PiG y limits 
 
 ---
 *Last updated: September 13, 2025*

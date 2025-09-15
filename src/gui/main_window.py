@@ -42,6 +42,12 @@ class MainWindow(QMainWindow):
         self.email_notifier = EmailNotifier()
         self.trigger_conditions = []
         
+        # Initialize trigger monitoring (separate from live plotting)
+        self.trigger_monitoring_enabled = False
+        self.trigger_timer = QTimer(self)
+        self.trigger_timer.timeout.connect(self.check_triggers)
+        self.trigger_status_widgets = []  # Store references to trigger status widgets
+        
         # Initialize live plot variables
         self.live_plot_start_date = None
         self.live_plot_start_time = None
@@ -366,10 +372,56 @@ class MainWindow(QMainWindow):
         self.email_status_label.setWordWrap(True)
         notifications_layout.addWidget(self.email_status_label)
         
-        # Trigger status area
-        self.trigger_status_label = QLabel("No active triggers")
-        self.trigger_status_label.setWordWrap(True)
-        notifications_layout.addWidget(self.trigger_status_label)
+        # Trigger monitoring control buttons
+        trigger_control_layout = QHBoxLayout()
+        
+        self.start_monitoring_btn = QPushButton("Start Monitoring")
+        self.start_monitoring_btn.clicked.connect(self.start_trigger_monitoring)
+        self.start_monitoring_btn.setEnabled(False)
+        trigger_control_layout.addWidget(self.start_monitoring_btn)
+        
+        self.stop_monitoring_btn = QPushButton("Stop Monitoring")
+        self.stop_monitoring_btn.clicked.connect(self.stop_trigger_monitoring)
+        self.stop_monitoring_btn.setEnabled(False)
+        trigger_control_layout.addWidget(self.stop_monitoring_btn)
+        
+        notifications_layout.addLayout(trigger_control_layout)
+        
+        # Monitoring status label
+        self.monitoring_status_label = QLabel("Monitoring stopped")
+        self.monitoring_status_label.setWordWrap(True)
+        notifications_layout.addWidget(self.monitoring_status_label)
+        
+        # Active triggers display with scroll area
+        triggers_label = QLabel("Active Triggers:")
+        notifications_layout.addWidget(triggers_label)
+        
+        # Create scroll area for triggers
+        self.triggers_scroll = QScrollArea()
+        self.triggers_scroll.setWidgetResizable(True)
+        self.triggers_scroll.setMaximumHeight(150)
+        self.triggers_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.triggers_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # Widget to contain trigger status items
+        self.triggers_widget = QWidget()
+        self.triggers_layout = QVBoxLayout(self.triggers_widget)
+        self.triggers_scroll.setWidget(self.triggers_widget)
+        
+        # Initially show "no triggers" message
+        self.no_triggers_label = QLabel("No triggers configured")
+        self.no_triggers_label.setStyleSheet("color: gray; font-style: italic;")
+        self.triggers_layout.addWidget(self.no_triggers_label)
+        
+        notifications_layout.addWidget(self.triggers_scroll)
+        
+        # Recent notifications area
+        notifications_label = QLabel("Recent Notifications:")
+        notifications_layout.addWidget(notifications_label)
+        
+        self.notifications_list = QListWidget()
+        self.notifications_list.setMaximumHeight(100)
+        notifications_layout.addWidget(self.notifications_list)
         
         notifications_group.setContentLayout(notifications_layout)
         layout.addWidget(notifications_group)
@@ -920,13 +972,16 @@ class MainWindow(QMainWindow):
             self.email_status_label.setText("Email notifications not configured")
             self.email_status_label.setStyleSheet("color: gray;")
             
-        # Update trigger status
-        if self.trigger_conditions:
-            trigger_texts = [trigger.get_description() for trigger in self.trigger_conditions]
-            self.trigger_status_label.setText(f"Active triggers ({len(self.trigger_conditions)}):\n" + 
-                                            "\n".join(trigger_texts[:3]))  # Show first 3
+        # Update trigger monitoring buttons
+        if self.email_notifier.is_configured and self.trigger_conditions:
+            self.start_monitoring_btn.setEnabled(not self.trigger_monitoring_enabled)
+            self.stop_monitoring_btn.setEnabled(self.trigger_monitoring_enabled)
         else:
-            self.trigger_status_label.setText("No active triggers")
+            self.start_monitoring_btn.setEnabled(False)
+            self.stop_monitoring_btn.setEnabled(False)
+        
+        # Update trigger display
+        self.update_trigger_display()
             
     def check_email_triggers(self, current_data):
         """Check if any email triggers should be fired"""
@@ -976,8 +1031,11 @@ class MainWindow(QMainWindow):
                                 
                                 if success:
                                     trigger.mark_email_sent(current_time)
+                                    notification_msg = f"Alert sent: {trigger.parameter_name} = {current_value:.2f}"
+                                    self.add_notification(notification_msg)
                                     print(f"Alert sent for {trigger.parameter_name}: {current_value} (email sent)")
                                 else:
+                                    self.add_notification(f"Failed to send alert for {trigger.parameter_name}")
                                     print(f"Failed to send alert for {trigger.parameter_name}")
                             else:
                                 # Trigger met but email cooldown active
@@ -993,3 +1051,191 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Error in check_email_triggers: {str(e)}")
             # Don't let email trigger errors crash the entire application
+            
+    def start_trigger_monitoring(self):
+        """Start independent trigger monitoring"""
+        if not self.email_notifier.is_configured or not self.trigger_conditions:
+            QMessageBox.warning(self, "Warning", "Please configure email notifications and add triggers first.")
+            return
+            
+        self.trigger_monitoring_enabled = True
+        
+        # Reset all trigger states
+        for trigger in self.trigger_conditions:
+            trigger.monitoring_start_time = None
+            trigger.trigger_start_time = None
+            trigger.is_active = False
+            
+        # Start the trigger monitoring timer (check every 30 seconds)
+        self.trigger_timer.start(30000)
+        
+        # Update UI
+        self.start_monitoring_btn.setEnabled(False)
+        self.stop_monitoring_btn.setEnabled(True)
+        self.monitoring_status_label.setText("✓ Monitoring active")
+        self.monitoring_status_label.setStyleSheet("color: green;")
+        
+        # Add notification to list
+        self.add_notification("Trigger monitoring started")
+        print("Trigger monitoring started")
+        
+    def stop_trigger_monitoring(self):
+        """Stop trigger monitoring"""
+        self.trigger_monitoring_enabled = False
+        self.trigger_timer.stop()
+        
+        # Update UI
+        self.start_monitoring_btn.setEnabled(True)
+        self.stop_monitoring_btn.setEnabled(False)
+        self.monitoring_status_label.setText("Monitoring stopped")
+        self.monitoring_status_label.setStyleSheet("color: gray;")
+        
+        # Add notification to list
+        self.add_notification("Trigger monitoring stopped")
+        print("Trigger monitoring stopped")
+        
+    def check_triggers(self):
+        """Check triggers independently of live plotting"""
+        try:
+            if not self.trigger_monitoring_enabled or not self.trigger_conditions:
+                return
+                
+            # Get the latest data from the most recent files
+            current_time = datetime.now()
+            
+            # Get files from the last hour to ensure we have recent data
+            start_time = current_time.replace(minute=0, second=0, microsecond=0)
+            files = self.data_processor.get_log_files(start_time.date(), current_time.date())
+            
+            if not files:
+                print("No recent files found for trigger monitoring")
+                return
+                
+            # Get the most recent file
+            recent_files = [f['path'] for f in files[-3:]]  # Check last 3 files for more data
+            
+            # Process data
+            data = self.data_processor.process_multiple_files(recent_files)
+            if data is None or (isinstance(data, dict) and not data):
+                print("No data available for trigger monitoring")
+                return
+                
+            # Check triggers with this data
+            self.check_email_triggers(data)
+            
+            # Update trigger display
+            self.update_trigger_display()
+            
+        except Exception as e:
+            print(f"Error in trigger monitoring: {str(e)}")
+            
+    def update_trigger_display(self):
+        """Update the trigger display in the UI"""
+        # Clear existing widgets
+        for widget in self.trigger_status_widgets:
+            widget.setParent(None)
+        self.trigger_status_widgets.clear()
+        
+        # Remove the "no triggers" label if it exists
+        if hasattr(self, 'no_triggers_label') and self.no_triggers_label.parent():
+            self.no_triggers_label.setParent(None)
+            
+        if not self.trigger_conditions:
+            # Show "no triggers" message
+            self.no_triggers_label = QLabel("No triggers configured")
+            self.no_triggers_label.setStyleSheet("color: gray; font-style: italic;")
+            self.triggers_layout.addWidget(self.no_triggers_label)
+            return
+            
+        # Create status widgets for each trigger
+        current_time = datetime.now()
+        
+        for i, trigger in enumerate(self.trigger_conditions):
+            trigger_widget = QWidget()
+            trigger_layout = QVBoxLayout(trigger_widget)
+            trigger_layout.setContentsMargins(5, 5, 5, 5)
+            
+            # Main trigger description
+            desc_label = QLabel(trigger.get_description())
+            desc_label.setWordWrap(True)
+            trigger_layout.addWidget(desc_label)
+            
+            # Status and timing info
+            status_text, status_color = self.get_trigger_status_text(trigger, current_time)
+            status_label = QLabel(status_text)
+            status_label.setStyleSheet(f"color: {status_color}; font-size: 11px; font-style: italic;")
+            trigger_layout.addWidget(status_label)
+            
+            # Add separator except for last item
+            if i < len(self.trigger_conditions) - 1:
+                separator = QFrame()
+                separator.setFrameShape(QFrame.Shape.HLine)
+                separator.setFrameShadow(QFrame.Shadow.Sunken)
+                trigger_layout.addWidget(separator)
+            
+            self.triggers_layout.addWidget(trigger_widget)
+            self.trigger_status_widgets.append(trigger_widget)
+            
+    def get_trigger_status_text(self, trigger, current_time):
+        """Get status text and color for a trigger"""
+        if not self.trigger_monitoring_enabled:
+            return "Monitoring stopped", "gray"
+            
+        # Check cooldown status
+        if trigger.last_email_sent:
+            time_since_email = (current_time - trigger.last_email_sent).total_seconds() / 60
+            if time_since_email < trigger.email_cooldown_minutes:
+                remaining = trigger.email_cooldown_minutes - time_since_email
+                return f"Cooldown: {remaining:.1f} min remaining", "blue"
+                
+        if trigger.is_active:
+            return "TRIGGERED - Alert sent!", "red"
+            
+        # Check monitoring type specific status
+        if trigger.monitoring_type == TriggerCondition.TIME_BOUNDED:
+            if trigger.monitoring_start_time:
+                elapsed = (current_time - trigger.monitoring_start_time).total_seconds() / 60
+                if elapsed < trigger.duration_minutes:
+                    remaining = trigger.duration_minutes - elapsed
+                    return f"Monitoring: {remaining:.1f} min remaining", "orange"
+                else:
+                    return "Monitoring period expired", "gray"
+            else:
+                return f"Ready to monitor for {trigger.duration_minutes} min", "green"
+                
+        elif trigger.monitoring_type == TriggerCondition.DELAYED_ACTIVATION:
+            if trigger.monitoring_start_time:
+                elapsed = (current_time - trigger.monitoring_start_time).total_seconds() / 60
+                if elapsed < trigger.duration_minutes:
+                    remaining = trigger.duration_minutes - elapsed
+                    return f"Waiting: {remaining:.1f} min remaining", "brown"
+                else:
+                    return "Ready to trigger", "green"
+            else:
+                return f"Will wait {trigger.duration_minutes} min before activating", "brown"
+                
+        else:  # CONTINUOUS_DURATION
+            if trigger.trigger_start_time:
+                elapsed = (current_time - trigger.trigger_start_time).total_seconds() / 60
+                remaining = max(0, trigger.duration_minutes - elapsed)
+                if remaining > 0:
+                    return f"Condition met: {remaining:.1f} min until trigger", "orange"
+                else:
+                    return "Ready to trigger", "green"
+            else:
+                if trigger.duration_minutes > 0:
+                    return f"Ready - will trigger after {trigger.duration_minutes} min", "green"
+                else:
+                    return "Ready - immediate trigger", "green"
+                    
+    def add_notification(self, message):
+        """Add a notification to the recent notifications list"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        notification_text = f"[{timestamp}] {message}"
+        
+        # Add to the top of the list
+        self.notifications_list.insertItem(0, notification_text)
+        
+        # Limit to 10 recent notifications
+        while self.notifications_list.count() > 10:
+            self.notifications_list.takeItem(self.notifications_list.count() - 1)
