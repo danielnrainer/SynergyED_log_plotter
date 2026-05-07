@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
 from .collapsible_box import QCollapsibleBox
 from .email_config_dialog import EmailConfigDialog
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from PyQt6.QtCore import Qt, QDate, QTime, QTimer
 import matplotlib
 matplotlib.use('QtAgg')  # Use Qt backend for matplotlib
@@ -25,7 +25,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SynergyED Log Plotter")
-        self.setGeometry(100, 100, 1400, 800)
+        self.setGeometry(100, 100, 1200, 700)
         
         # Create the central widget and layout
         self.central_widget = QWidget()
@@ -57,17 +57,28 @@ class MainWindow(QMainWindow):
         self.live_plot_timer.timeout.connect(self.update_live_plot)
         self.live_plot_enabled = False
         
-        # Initialize view limit storage
+        # Store the requested time range for x-axis limits (independent of data bounds)
+        self.live_plot_time_range = None  # Tuple of (start_datetime, end_datetime)
+        
+        # Initialize view limit storage for user zoom/pan (None = use live_plot_time_range)
         self.stored_xlim = None
         self.stored_ylims = {}
+        self.user_has_zoomed = False  # Track if user has manually zoomed/panned
         
         # Create panels
         self.create_left_panel()
         self.create_right_panel()
         
+        # Wrap left panel in a scroll area
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(self.left_panel)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
         # Split the panels
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.left_panel)
+        splitter.addWidget(left_scroll)
         splitter.addWidget(self.right_panel)
         splitter.setSizes([450, 1000])  # Set initial split sizes
         self._layout.addWidget(splitter)
@@ -77,7 +88,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.left_panel)
         
         # Directory selection
-        dir_group = QCollapsibleBox("Log Directory")
+        dir_group = QCollapsibleBox("Log Directory", expanded=False)
         dir_layout = QVBoxLayout()
         
         self.dir_label = QLabel(self.data_processor.base_dir)
@@ -92,7 +103,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(dir_group)
         
         # File selection and date range group
-        file_group = QCollapsibleBox("Log File Selection")
+        file_group = QCollapsibleBox("Log File Selection", expanded=False)
         file_layout = QVBoxLayout()
         
         # Date/Time Range section
@@ -226,10 +237,10 @@ class MainWindow(QMainWindow):
         params_layout = QVBoxLayout(scroll_widget)
         
         params = [
-            'HT [kV]', 'Beam Current [uA]', 'Filament Current [A]',
+            'HT [kV]', 'HT Setpoint [kV]', 'Beam Current [uA]', 'Filament Current [A]',
             'Penning PeG1', 'Column PiG1', 'Gun PiG2', 'Detector PiG3',
             'Specimen PiG4', 'RT1 PiG5', 'Bias coarse', 'Bias fine',
-            'Stage X [um]', 'Stage Y [um]', 'Stage Z [um]', 'Stage TX [deg]'
+            'Stage X [um]', 'Stage Y [um]', 'Stage Z [um]', 'Stage TX [deg]', 'Stage TY [deg]'
         ]
         
         for param in params:
@@ -294,6 +305,7 @@ class MainWindow(QMainWindow):
             # Set default ranges for specific parameters
             defaults = {
                 'HT [kV]': (0, 200),
+                'HT Setpoint [kV]': (0, 200),
                 'Beam Current [uA]': (0, 110),
                 'Filament Current [A]': (0, 2.5),
                 'Penning PeG1 [uA]': (0, 270),
@@ -359,7 +371,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(settings_group)
         
         # Email Notifications Group
-        notifications_group = QCollapsibleBox("Email Notifications")
+        notifications_group = QCollapsibleBox("Email Notifications", expanded=False)
         notifications_layout = QVBoxLayout()
         
         # Configure email button
@@ -426,13 +438,6 @@ class MainWindow(QMainWindow):
         notifications_group.setContentLayout(notifications_layout)
         layout.addWidget(notifications_group)
         
-        # Add Live Plot toggle button
-        self.live_plot_btn = QPushButton("Enable Live Plot")
-        self.live_plot_btn.setCheckable(True)
-        self.live_plot_btn.setChecked(False)
-        self.live_plot_btn.clicked.connect(self.toggle_live_plot)
-        layout.addWidget(self.live_plot_btn)
-        
         # Add stretch to push everything up
         layout.addStretch()
         
@@ -440,10 +445,57 @@ class MainWindow(QMainWindow):
         self.right_panel = QWidget()
         layout = QVBoxLayout(self.right_panel)
         
+        # Create a horizontal layout for live plot controls
+        live_plot_controls = QHBoxLayout()
+        
+        # Add Live Plot toggle button
+        self.live_plot_btn = QPushButton("Enable Live Plot")
+        self.live_plot_btn.setCheckable(True)
+        self.live_plot_btn.setChecked(False)
+        self.live_plot_btn.clicked.connect(self.toggle_live_plot)
+        live_plot_controls.addWidget(self.live_plot_btn)
+        
+        # Add separator
+        live_plot_controls.addSpacing(20)
+        
+        # Add checkbox for time window
+        self.live_plot_window_enabled = QCheckBox("Show last")
+        self.live_plot_window_enabled.setChecked(False)
+        self.live_plot_window_enabled.stateChanged.connect(self.on_live_window_changed)
+        live_plot_controls.addWidget(self.live_plot_window_enabled)
+        
+        # Add spinbox for minutes
+        self.live_plot_window_minutes = QLineEdit()
+        self.live_plot_window_minutes.setText("30")
+        self.live_plot_window_minutes.setMaximumWidth(50)
+        self.live_plot_window_minutes.setEnabled(False)
+        live_plot_controls.addWidget(self.live_plot_window_minutes)
+        
+        # Add label
+        minutes_label = QLabel("minutes")
+        live_plot_controls.addWidget(minutes_label)
+        
+        # Add separator before reset button
+        live_plot_controls.addSpacing(20)
+        
+        # Add Reset View button
+        self.reset_view_btn = QPushButton("Reset View")
+        self.reset_view_btn.setToolTip("Reset plot view to the requested time range")
+        self.reset_view_btn.clicked.connect(self.reset_live_view)
+        live_plot_controls.addWidget(self.reset_view_btn)
+        
+        # Add stretch to push controls to the left
+        live_plot_controls.addStretch()
+        
+        layout.addLayout(live_plot_controls)
+        
         # Create matplotlib figure
         self.figure = Figure(figsize=(10, 6))
         self.canvas = FigureCanvas(self.figure)
         self.toolbar = NavigationToolbar(self.canvas, self)
+        
+        # Connect to canvas events to detect user zoom/pan
+        self.canvas.mpl_connect('button_release_event', self.on_plot_interaction)
         
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
@@ -481,6 +533,22 @@ class MainWindow(QMainWindow):
         Args:
             files_to_plot: Optional list of file paths to plot. If None, uses selected files from GUI.
         """
+        # Check if we should preserve zoom (e.g., during live plotting)
+        preserve_zoom = self.live_plot_enabled if hasattr(self, 'live_plot_enabled') else False
+        
+        # Store current axis limits before clearing if we're preserving zoom
+        if preserve_zoom and self.figure.axes:
+            if self.stored_xlim is None:  # Only store if not already stored
+                self.stored_xlim = self.figure.axes[0].get_xlim()
+                self.stored_ylims = {}
+                for ax in self.figure.axes:
+                    if ax.get_ylabel():
+                        self.stored_ylims[ax.get_ylabel()] = ax.get_ylim()
+        elif not preserve_zoom:
+            # Clear stored limits if not in live mode
+            self.stored_xlim = None
+            self.stored_ylims = {}
+        
         # Reset current data to ensure fresh plotting
         self.current_data = None
         if files_to_plot is None:
@@ -555,26 +623,25 @@ class MainWindow(QMainWindow):
         
         # Plot first parameter on main axis
         color = colors[0]
-        # Create a list to store all DataFrames for this parameter
-        all_dfs = []
-        for j, file_path in enumerate(files_to_plot):
-            df = self.data_processor.read_log_file(file_path)
-            if df is not None:
-                all_dfs.append(df)
-                
-                # Create line plot without label - we'll add a single label later
-                if plot_type in ["Line Plot", "Both"]:
-                    main_ax.plot(df.index, df[main_param], '-', color=color)
-                if plot_type in ["Scatter Plot", "Both"]:
-                    main_ax.scatter(df.index, df[main_param], color=color, alpha=0.5)
-                # Store data range
-                if main_param not in param_data:
-                    param_data[main_param] = {'min': float('inf'), 'max': float('-inf')}
-                param_data[main_param]['min'] = min(param_data[main_param]['min'], df[main_param].min())
-                param_data[main_param]['max'] = max(param_data[main_param]['max'], df[main_param].max())
+        
+        # Use the already-filtered current_data instead of re-reading files
+        if self.current_data and main_param in self.current_data:
+            data_series = self.current_data[main_param]
+            
+            # Create line plot
+            if plot_type in ["Line Plot", "Both"]:
+                main_ax.plot(data_series.index, data_series.values, '-', color=color)
+            if plot_type in ["Scatter Plot", "Both"]:
+                main_ax.scatter(data_series.index, data_series.values, color=color, alpha=0.5)
+            
+            # Store data range
+            param_data[main_param] = {
+                'min': data_series.min(),
+                'max': data_series.max()
+            }
         
         # Add a single line to the legend for this parameter
-        if all_dfs and self.show_legend.isChecked():
+        if self.current_data and main_param in self.current_data and self.show_legend.isChecked():
             # Add one dummy line with the correct label and color
             if plot_type in ["Line Plot", "Both"]:
                 main_ax.plot([], [], '-', color=color, label=main_param)
@@ -629,23 +696,24 @@ class MainWindow(QMainWindow):
             
             color = colors[i % len(colors)]
             
-            # Plot the parameter on the new axis
-            for j, file_path in enumerate(files_to_plot):
-                df = self.data_processor.read_log_file(file_path)
-                if df is not None:
-                    # Plot without label - we'll add a single label later
-                    if plot_type in ["Line Plot", "Both"]:
-                        new_ax.plot(df.index, df[param], '-', color=color)
-                    if plot_type in ["Scatter Plot", "Both"]:
-                        new_ax.scatter(df.index, df[param], color=color, alpha=0.5)
-                    # Store data range
-                    if param not in param_data:
-                        param_data[param] = {'min': float('inf'), 'max': float('-inf')}
-                    param_data[param]['min'] = min(param_data[param]['min'], df[param].min())
-                    param_data[param]['max'] = max(param_data[param]['max'], df[param].max())
+            # Use the already-filtered current_data instead of re-reading files
+            if self.current_data and param in self.current_data:
+                data_series = self.current_data[param]
+                
+                # Plot without label - we'll add a single label later
+                if plot_type in ["Line Plot", "Both"]:
+                    new_ax.plot(data_series.index, data_series.values, '-', color=color)
+                if plot_type in ["Scatter Plot", "Both"]:
+                    new_ax.scatter(data_series.index, data_series.values, color=color, alpha=0.5)
+                
+                # Store data range
+                param_data[param] = {
+                    'min': data_series.min(),
+                    'max': data_series.max()
+                }
             
             # Add a single line to the legend for this parameter
-            if self.show_legend.isChecked():
+            if self.current_data and param in self.current_data and self.show_legend.isChecked():
                 # Add one dummy line with the correct label and color
                 if plot_type in ["Line Plot", "Both"]:
                     new_ax.plot([], [], '-', color=color, label=param)
@@ -740,6 +808,43 @@ class MainWindow(QMainWindow):
             # Draw the figure first to get proper sizing
             self.canvas.draw()
             
+            # Handle x-axis limits based on live plotting state
+            if self.live_plot_enabled and self.live_plot_time_range is not None and self.figure.axes:
+                start_dt, end_dt = self.live_plot_time_range
+                
+                # Convert datetime to matplotlib date numbers
+                start_num = mdates.date2num(start_dt)
+                end_num = mdates.date2num(end_dt)
+                
+                if self.user_has_zoomed and self.stored_xlim is not None:
+                    # User has manually zoomed - respect their zoom
+                    self.figure.axes[0].set_xlim(self.stored_xlim)
+                else:
+                    # Use the requested time range as x-axis limits
+                    self.figure.axes[0].set_xlim(start_num, end_num)
+                
+                # Restore y-axis limits if user has zoomed
+                if self.user_has_zoomed:
+                    for ax in self.figure.axes:
+                        ylabel = ax.get_ylabel()
+                        if ylabel and ylabel in self.stored_ylims:
+                            ax.set_ylim(self.stored_ylims[ylabel])
+                
+                # Redraw after setting limits
+                self.canvas.draw()
+            elif self.stored_xlim is not None and self.figure.axes:
+                # Non-live mode: restore zoom levels if they were stored
+                self.figure.axes[0].set_xlim(self.stored_xlim)
+                
+                # Restore y-axis limits for all axes based on their labels
+                for ax in self.figure.axes:
+                    ylabel = ax.get_ylabel()
+                    if ylabel and ylabel in self.stored_ylims:
+                        ax.set_ylim(self.stored_ylims[ylabel])
+                
+                # Redraw after restoring limits
+                self.canvas.draw()
+            
             # Try to adjust the figure size based on actual axis positions
             try:
                 # Attempt to get renderer - this may not work on all matplotlib backends
@@ -797,12 +902,54 @@ class MainWindow(QMainWindow):
             self.live_plot_start_time = self.quick_start_time.time()
             self.live_plot_btn.setText("Disable Live Plot")
             self.live_plot_enabled = True
+            # Reset zoom state - user hasn't zoomed yet
+            self.user_has_zoomed = False
+            self.stored_xlim = None
+            self.stored_ylims = {}
+            self.live_plot_time_range = None
             self.live_plot_timer.start(2000)  # Update every 2 seconds
         else:
             self.live_plot_btn.setText("Enable Live Plot")
             self.live_plot_enabled = False
             self.live_plot_timer.stop()
+            # Clear stored zoom limits and time range when disabling live plot
+            self.stored_xlim = None
+            self.stored_ylims = {}
+            self.live_plot_time_range = None
+            self.user_has_zoomed = False
+    
+    def on_live_window_changed(self):
+        """Enable/disable the minutes input field based on checkbox state"""
+        self.live_plot_window_minutes.setEnabled(self.live_plot_window_enabled.isChecked())
+        # Reset zoom state when time window setting changes
+        if self.live_plot_enabled:
+            self.user_has_zoomed = False
+            self.stored_xlim = None
+            self.stored_ylims = {}
+            self.live_plot_time_range = None
 
+    def on_plot_interaction(self, event):
+        """Called when user interacts with the plot (zoom, pan, etc.)"""
+        if self.live_plot_enabled and self.figure.axes:
+            # Check if the toolbar is in zoom or pan mode
+            if self.toolbar.mode in ('zoom rect', 'pan/zoom'):
+                # User has zoomed or panned - store their view
+                self.user_has_zoomed = True
+                self.stored_xlim = self.figure.axes[0].get_xlim()
+                self.stored_ylims = {}
+                for ax in self.figure.axes:
+                    ylabel = ax.get_ylabel()
+                    if ylabel:
+                        self.stored_ylims[ylabel] = ax.get_ylim()
+    
+    def reset_live_view(self):
+        """Reset the plot view to the requested time range (clear user zoom)"""
+        self.user_has_zoomed = False
+        self.stored_xlim = None
+        self.stored_ylims = {}
+        # Trigger an immediate update if live plotting is active
+        if self.live_plot_enabled:
+            self.update_live_plot()
     def plot_time_range(self, start_date_widget, start_time_widget, end_date_widget, end_time_widget):
         """Plot data directly from a time range without manual file selection"""
         # Get the date/time range
@@ -824,10 +971,17 @@ class MainWindow(QMainWindow):
         # Filter files that contain data within the requested time range
         files_to_plot = []
         for file_info in self.available_files:
-            df = self.data_processor.read_log_file(file_info['path'])
-            if df is not None and not df.empty:
-                file_start = df.index[0]
-                file_end = df.index[-1]
+            # Quickly check if file might contain relevant data based on its representative date
+            # This is an optimization to avoid reading every file
+            file_date = file_info['date']
+            
+            # Skip files that are clearly outside the date range (day-level check)
+            if file_date.date() > end_datetime.date() or file_date.date() < (start_datetime.date() - timedelta(days=1)):
+                continue
+            
+            # Use cached time range check (much faster than reading full file)
+            file_start, file_end = self.data_processor.get_file_time_range(file_info['path'])
+            if file_start is not None and file_end is not None:
                 # Check if file's time range overlaps with requested range
                 if (file_start <= end_datetime and file_end >= start_datetime):
                     files_to_plot.append(file_info['path'])
@@ -877,22 +1031,32 @@ class MainWindow(QMainWindow):
         if self.live_plot_start_date is None or self.live_plot_start_time is None:
             print("Live plot not properly initialized")
             return
-            
-        # Store current axis limits if they exist
-        xlim = None
-        ylims = {}
-        if self.figure.axes:
-            xlim = self.figure.axes[0].get_xlim()
-            for ax in self.figure.axes:
-                if ax.get_ylabel():  # Only store if the axis has a label
-                    ylims[ax.get_ylabel()] = ax.get_ylim()
         
         # Use stored start time and current time as the range
-        start_datetime = datetime.combine(
-            self.live_plot_start_date.toPyDate(),
-            self.live_plot_start_time.toPyTime()
-        )
         end_datetime = datetime.now()
+        
+        # Check if time window is enabled
+        if self.live_plot_window_enabled.isChecked():
+            try:
+                # Get the number of minutes from the input field
+                minutes = int(self.live_plot_window_minutes.text())
+                # Calculate start time as current time minus the specified minutes
+                start_datetime = end_datetime - timedelta(minutes=minutes)
+            except (ValueError, AttributeError):
+                # If conversion fails, fall back to the original start time
+                start_datetime = datetime.combine(
+                    self.live_plot_start_date.toPyDate(),
+                    self.live_plot_start_time.toPyTime()
+                )
+        else:
+            # Use the original start time
+            start_datetime = datetime.combine(
+                self.live_plot_start_date.toPyDate(),
+                self.live_plot_start_time.toPyTime()
+            )
+        
+        # Store the requested time range - this defines the x-axis bounds
+        self.live_plot_time_range = (start_datetime, end_datetime)
         
         # Get all files in the date range
         self.available_files = self.data_processor.get_log_files(
@@ -900,17 +1064,19 @@ class MainWindow(QMainWindow):
             end_datetime.date()
         )
         
-        # Store the limits to use after plotting
-        self.stored_xlim = xlim
-        self.stored_ylims = ylims
-        
         # Filter files that contain data within the requested time range
         files_to_plot = []
         for file_info in self.available_files:
-            df = self.data_processor.read_log_file(file_info['path'])
-            if df is not None and not df.empty:
-                file_start = df.index[0]
-                file_end = df.index[-1]
+            # Quickly check if file might contain relevant data
+            file_date = file_info['date']
+            
+            # Skip files that are clearly outside the date range (day-level check)
+            if file_date.date() > end_datetime.date() or file_date.date() < (start_datetime.date() - timedelta(days=1)):
+                continue
+            
+            # Use cached time range check (much faster than reading full file)
+            file_start, file_end = self.data_processor.get_file_time_range(file_info['path'])
+            if file_start is not None and file_end is not None:
                 # Check if file's time range overlaps with requested range
                 if (file_start <= end_datetime and file_end >= start_datetime):
                     files_to_plot.append(file_info['path'])
@@ -918,11 +1084,13 @@ class MainWindow(QMainWindow):
         if not files_to_plot:
             return  # Don't show warning in live mode, just skip update
             
-        # Process the data with datetime filtering
-        self.current_data = self.data_processor.process_multiple_files(
+        # Process the data with datetime filtering using live-aware method
+        # This will re-read the most recent file to catch new data
+        self.current_data = self.data_processor.process_multiple_files_live(
             files_to_plot,
             start_datetime=start_datetime,
-            end_datetime=end_datetime
+            end_datetime=end_datetime,
+            force_reread_latest=True
         )
         
         if self.current_data is None:

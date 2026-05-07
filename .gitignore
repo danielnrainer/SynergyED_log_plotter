@@ -6,6 +6,10 @@
 *.swp
 *.bak
 *.orig
-.github/copilot-instructions.md
+*.pyo
+*.pyd
+__pycache__/
+.github/
 dist/
 build/
+.vscode/

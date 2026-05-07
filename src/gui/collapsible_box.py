@@ -5,17 +5,20 @@ from PyQt6.QtGui import QCursor
 class QCollapsibleBox(QWidget):
     """A custom collapsible box widget"""
     
-    def __init__(self, title="", parent=None):
+    def __init__(self, title="", parent=None, expanded=True):
         super().__init__(parent)
         
-        self.toggleButton = QPushButton(title)
+        self.title = title
+        # Set initial arrow based on expanded state
+        arrow = "▼" if expanded else "▶"
+        self.toggleButton = QPushButton(f"{arrow} {title}")
         self.toggleButton.setStyleSheet("text-align: left; padding: 5px;")
         self.toggleButton.setCheckable(True)
-        self.toggleButton.setChecked(True)
+        self.toggleButton.setChecked(expanded)
         self.toggleButton.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         
         self.contentWidget = QWidget()
-        self.contentWidget.setVisible(True)
+        self.contentWidget.setVisible(expanded)
         
         lay = QVBoxLayout(self)
         lay.setSpacing(0)
@@ -24,6 +27,14 @@ class QCollapsibleBox(QWidget):
         lay.addWidget(self.contentWidget)
         
         self.toggleButton.toggled.connect(self.toggle)
+    
+    def toggle(self, checked):
+        self.contentWidget.setVisible(checked)
+        # Update the arrow icon based on expanded/collapsed state
+        if checked:
+            self.toggleButton.setText(f"▼ {self.title}")
+        else:
+            self.toggleButton.setText(f"▶ {self.title}")
         
     def setContentLayout(self, layout):
         layout.setContentsMargins(8, 4, 8, 4)
@@ -33,16 +44,18 @@ class QCollapsibleBox(QWidget):
         self.toggleButton.setStyleSheet("""
             QPushButton {
                 text-align: left;
-                padding: 4px;
+                padding: 6px 8px;
                 margin: 0px;
-                border: none;
-                background-color: #f0f0f0;
-                border-radius: 2px;
+                border: 1px solid #d0d0d0;
+                background-color: #f5f5f5;
+                border-radius: 3px;
+                font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #e0e0e0;
+                background-color: #e8e8e8;
+                border: 1px solid #b0b0b0;
+            }
+            QPushButton:pressed {
+                background-color: #d8d8d8;
             }
         """)
-        
-    def toggle(self, checked):
-        self.contentWidget.setVisible(checked)

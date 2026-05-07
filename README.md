@@ -4,7 +4,7 @@ A graphical tool for plotting and analyzing logging data collected from CrysAlis
 
 ## Features
 
-- Plot multiple parameters from SynergyED log files
+- Plot multiple parameters from SynergyED and jeol_logger log files
 - Support for both automatic and manual log files
 - Flexible date/time range selection
 - Customizable axis ranges with auto-scaling option
@@ -17,7 +17,9 @@ A graphical tool for plotting and analyzing logging data collected from CrysAlis
 ## Usage
 
 1. Launch the application and select your log directory using the "Change Directory" button.
-   - default directory is C:\Xcalibur\log\SynergyED_DiagnosticData
+   - default directory preference:
+   - %LOCALAPPDATA%\JEOL_logger\logs (per Windows user)
+     - fallback: C:\Xcalibur\log\SynergyED_DiagnosticData
 
 2. Select files to plot using either method:
    - Use the date/time range selector and "Refresh Files" to find files
@@ -42,15 +44,17 @@ A graphical tool for plotting and analyzing logging data collected from CrysAlis
 
 ## File Support
 
-- Works with both "old" and "new" log file naming schemes
-- Supports manual log files (no specific naming requirements)
-- Automatically extracts dates from file contents when needed
+- Supports auto and manual log files created by CrysAlisPRO (Rigaku) for Synergy-ED instruments
+- Supports JEOL logger CSV files (for example `jeol_status_*.csv`)
 
 ## Parameters Available
 
-- High Tension (HT) [kV]
+- HT [kV]
+- HT Setpoint [kV]
 - Beam Current [uA]
 - Filament Current [A]
+- Bias coarse
+- Bias fine *(CrysAlisPRO files only; not available via JEOL COM interface)*
 - Pressure Gauges:
   - Penning PeG1
   - Column PiG1
@@ -63,6 +67,7 @@ A graphical tool for plotting and analyzing logging data collected from CrysAlis
   - Y [um]
   - Z [um]
   - TX [deg]
+  - TY [deg]
 
 ## Email Notifications
 
@@ -174,4 +179,49 @@ When a trigger condition is met, you'll receive an email containing:
 
 ```
 python src/main.py
+```
+
+## JEOL Logger (Companion Tool)
+
+The `logger/` folder contains a companion Windows tray application that polls the JEOL TEM3 COM interface and writes rotating CSV log files directly compatible with this plotter.
+
+### Features
+- Runs as a Windows system tray icon (minimises to tray on launch)
+- Polls instrument parameters every 2 seconds (configurable)
+- Writes `jeol_status_YYYYMMDD_HHMMSS.csv` files with 24-hour rotation to `%LOCALAPPDATA%\JEOL_logger\logs`
+- Logs 16 parameters: HT actual/setpoint, emission/filament/bias current, 5 pressure gauges, 5 stage axes
+- Configuration auto-created at `%LOCALAPPDATA%\JEOL_logger\jeol_logger_config.json` on first run
+
+### Requirements
+- Windows only
+- JEOL TEM3 COM interface installed (type-library GUID `{CE70FCE4-26D9-4BAB-9626-EC88DB7F6A0A}`)
+- Additional Python dependencies: `pystray`, `comtypes` (see `logger/` for requirements)
+
+### Running the Logger from Source
+
+```bash
+cd logger
+python jeol_logger.py
+# Optional flags:
+#   --config <path>       custom config file
+#   --once                single poll then exit
+#   --no-tray             run in terminal without tray icon
+#   --allow-missing-com   run without COM (logs NaN values)
+```
+
+## Building Executables
+
+### Log Plotter
+
+```bash
+pyinstaller SynergyED_log_plotter.spec
+# Output: dist/SynergyED_log_plotter.exe
+```
+
+### JEOL Logger
+
+```bash
+cd logger
+pyinstaller JEOL_logger.spec
+# Output: logger/dist/JEOL_logger.exe
 ```
